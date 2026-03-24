@@ -18,7 +18,7 @@ def cli():
 
 @cli.command()
 @click.option("--limit", "-n", default=None, type=int, help="Max contacts to search (for incremental runs)")
-@click.option("--min-confidence", default=0.60, show_default=True, type=float, help="Minimum confidence score to store a match (0.0–1.0)")
+@click.option("--min-confidence", default=0.40, show_default=True, type=float, help="Minimum confidence score to store a match (0.0–1.0)")
 def scrape(limit: Optional[int], min_confidence: float):
     """
     Search LinkedIn for un-matched contacts and store results in the local DB.
