@@ -1,5 +1,6 @@
 """Write approved LinkedIn data back to Apple Contacts.app via the native Contacts framework."""
 
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +9,48 @@ import Foundation
 from rich.console import Console
 
 from .db import LinkedinMatch, db, get_approved_matches
+
+
+def _applescript_apply(contact_id: str, linkedin_url: Optional[str], photo_path: Optional[str]) -> Optional[str]:
+    """
+    Fallback writer using AppleScript (Apple Events), bypassing Core Data.
+    Returns None on success, error string on failure.
+    """
+    script_parts = [f'tell application "Contacts"\nset p to (first person whose id is "{contact_id}")']
+
+    if photo_path and Path(photo_path).exists():
+        script_parts.append(f'set image of p to (read posix file "{photo_path}" as JPEG picture)')
+
+    if linkedin_url:
+        safe_url = linkedin_url.replace('"', '\\"')
+        script_parts.append(
+            f'set hasLinkedIn to false\n'
+            f'repeat with u in urls of p\n'
+            f'    if value of u contains "linkedin.com" then\n'
+            f'        set hasLinkedIn to true\n'
+            f'        exit repeat\n'
+            f'    end if\n'
+            f'end repeat\n'
+            f'if not hasLinkedIn then\n'
+            f'    make new url at end of urls of p with properties {{label:"LinkedIn", value:"{safe_url}"}}\n'
+            f'end if'
+        )
+
+    script_parts.append("save\nend tell")
+    script = "\n".join(script_parts)
+
+    with __import__("tempfile").NamedTemporaryFile(mode="w", suffix=".applescript", delete=False) as f:
+        f.write(script)
+        script_path = f.name
+
+    try:
+        result = subprocess.run(["osascript", script_path], capture_output=True, text=True)
+    finally:
+        Path(script_path).unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        return result.stderr.strip() or "unknown AppleScript error"
+    return None
 
 
 def apply_approved_matches(
@@ -103,18 +146,25 @@ def apply_approved_matches(
                 m.save()
             updated += 1
         else:
-            # Error 134092 = Core Data faulting failure, almost always means the
-            # contact is in a read-only account (Exchange, Google, CardDAV, LDAP).
-            # Mark as skipped so re-running apply doesn't retry it.
+            # Error 134092 = Core Data faulting failure on the contact's backing store.
+            # Fall back to AppleScript which uses Apple Events instead of Core Data.
             error_code = error.code() if error else 0
             if error_code == 134092:
-                console.print(
-                    f"  {label}: [yellow]skipped — contact is in a read-only account "
-                    f"(Exchange / Google / CardDAV). Update it manually.[/yellow]"
+                console.print(f"  {label}: [yellow]PyObjC save failed (Core Data fault), trying AppleScript fallback...[/yellow]")
+                as_err = _applescript_apply(
+                    contact.id,
+                    m.linkedin_url if m.linkedin_url else None,
+                    m.photo_local if m.photo_local else None,
                 )
-                with db.atomic():
-                    m.status = "skipped"
-                    m.save()
+                if as_err is None:
+                    console.print(f"  {label}: applied via AppleScript fallback ✓")
+                    with db.atomic():
+                        m.status = "applied"
+                        m.save()
+                    updated += 1
+                else:
+                    console.print(f"  {label}: [red]AppleScript fallback also failed: {as_err}[/red]")
+                    failed += 1
             else:
                 console.print(f"  {label}: [red]save failed: {error}[/red]")
                 failed += 1
