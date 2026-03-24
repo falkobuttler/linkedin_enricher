@@ -18,7 +18,7 @@ dependencies = [
     "keyring>=25.7.0",
     "thefuzz>=0.22.1",
     "python-levenshtein>=0.27.3",
-    "pyobjc-framework-Contacts>=11.0",
+    "pyobjc-framework-Contacts>=12.1",
 ]
 
 [project.scripts]
