@@ -1,53 +1,12 @@
-"""Read contacts from Apple Contacts.app via AppleScript."""
+"""Read contacts from Apple Contacts.app via the native Contacts framework (PyObjC)."""
 
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
+import Contacts as CN
+
 from .db import Contact, db, init_db
-
-_APPLESCRIPT_TEMPLATE = """\
-set outFile to open for access POSIX file "{path}" with write permission
-tell application "Contacts"
-    set allPeople to every person
-    repeat with p in allPeople
-        try
-            set cid to id of p
-            set cname to name of p
-
-            set corg to ""
-            try
-                set corg to organization of p
-                if corg is missing value then set corg to ""
-            end try
-
-            set cemail to ""
-            try
-                set eList to value of emails of p
-                if (count of eList) > 0 then set cemail to item 1 of eList
-            end try
-
-            set clinkedin to ""
-            try
-                repeat with u in urls of p
-                    set uval to value of u
-                    if uval contains "linkedin.com" then
-                        set clinkedin to uval
-                        exit repeat
-                    end if
-                end repeat
-            end try
-
-            set dataLine to cid & tab & cname & tab & corg & tab & cemail & tab & clinkedin & linefeed
-            tell me to write dataLine to outFile
-        end try
-    end repeat
-end tell
-close access outFile
-"""
 
 
 @dataclass
@@ -60,79 +19,96 @@ class ContactRecord:
     linkedin_url: Optional[str] = None
 
 
-def _run_applescript(script: str) -> None:
-    """Write script to a temp file and run via osascript. Raises on error."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".applescript", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(script)
-        script_path = f.name
+def _ensure_access() -> None:
+    """Check Contacts authorization; exit with a clear message if denied."""
+    status = CN.CNContactStore.authorizationStatusForEntityType_(CN.CNEntityTypeContacts)
+    if status == CN.CNAuthorizationStatusAuthorized:
+        return
+    if status == CN.CNAuthorizationStatusNotDetermined:
+        store = CN.CNContactStore.alloc().init()
+        result = [None]
 
-    try:
-        result = subprocess.run(
-            ["osascript", script_path],
-            capture_output=True,
-            text=True,
-        )
-    finally:
-        Path(script_path).unlink(missing_ok=True)
+        def handler(granted, error):
+            result[0] = granted
 
-    if result.returncode != 0:
-        err = result.stderr.strip()
-        if "-1743" in err or (
-            "privacy" in err.lower() and "contacts" in err.lower()
-        ):
-            print(
-                "\n[ERROR] Contacts access denied.\n"
-                "Please grant Terminal (or your shell) access to Contacts:\n"
-                "  System Settings > Privacy & Security > Contacts\n"
-                "Then re-run this command.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        raise RuntimeError(f"AppleScript error: {err}")
+        store.requestAccessForEntityType_completionHandler_(CN.CNEntityTypeContacts, handler)
+        # Spin briefly while the system shows the permission dialog
+        import time
+        for _ in range(300):
+            if result[0] is not None:
+                break
+            time.sleep(0.1)
+        if result[0]:
+            return
+    print(
+        "\n[ERROR] Contacts access denied.\n"
+        "Please grant Terminal access to Contacts:\n"
+        "  System Settings > Privacy & Security > Contacts\n"
+        "Then re-run this command.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+_KEYS_TO_FETCH = [
+    CN.CNContactIdentifierKey,
+    CN.CNContactGivenNameKey,
+    CN.CNContactFamilyNameKey,
+    CN.CNContactOrganizationNameKey,
+    CN.CNContactEmailAddressesKey,
+    CN.CNContactUrlAddressesKey,
+    CN.CNContactImageDataAvailableKey,  # boolean — does NOT load image bytes
+]
 
 
 def export_contacts() -> list[ContactRecord]:
-    """Fetch all contacts from Contacts.app and return parsed records."""
-    print("Running AppleScript to export contacts (may take 10–30s for large books)...", flush=True)
+    """Fetch all contacts from the Contacts framework and return parsed records."""
+    _ensure_access()
+    print("Fetching contacts via Contacts framework...", flush=True)
 
-    # Write output to a temp file to avoid AppleScript string-concat limits
-    with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False) as f:
-        tmp_path = f.name
+    store = CN.CNContactStore.alloc().init()
+    fetch_request = CN.CNContactFetchRequest.alloc().initWithKeysToFetch_(_KEYS_TO_FETCH)
+    fetch_request.setUnifyResults_(True)
 
-    try:
-        script = _APPLESCRIPT_TEMPLATE.format(path=tmp_path)
-        _run_applescript(script)
-
-        raw = Path(tmp_path).read_text(encoding="utf-8", errors="replace")
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
-
-    print("AppleScript done, parsing output...", flush=True)
     records = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("\t")
-        if len(parts) < 5:
-            continue
-        cid, name, org, email, linkedin = parts[:5]
-        cid = cid.strip()
-        name = name.strip()
-        if not cid or not name:
-            continue
-        records.append(
-            ContactRecord(
-                id=cid,
-                full_name=name,
-                organization=org.strip() or None,
-                email=email.strip() or None,
-                has_photo=False,
-                linkedin_url=linkedin.strip() or None,
-            )
-        )
+
+    def handler(contact, stop):
+        given = contact.givenName() or ""
+        family = contact.familyName() or ""
+        name = f"{given} {family}".strip() or contact.organizationName() or ""
+        if not name:
+            return
+
+        org = contact.organizationName() or None
+
+        email = None
+        for lv in contact.emailAddresses():
+            email = str(lv.value())
+            break
+
+        linkedin_url = None
+        for lv in contact.urlAddresses():
+            url = str(lv.value())
+            if "linkedin.com" in url.lower():
+                linkedin_url = url
+                break
+
+        records.append(ContactRecord(
+            id=str(contact.identifier()),
+            full_name=name,
+            organization=org,
+            email=email,
+            has_photo=bool(contact.imageDataAvailable()),
+            linkedin_url=linkedin_url,
+        ))
+
+    success, error = store.enumerateContactsWithFetchRequest_error_usingBlock_(
+        fetch_request, None, handler
+    )
+    if error:
+        raise RuntimeError(f"Contacts fetch error: {error}")
+
+    print(f"Fetched {len(records)} contacts.", flush=True)
     return records
 
 
@@ -143,8 +119,9 @@ def load_contacts_to_db(only_without_photo: bool = True) -> int:
     loaded = 0
     with db.atomic():
         for r in records:
-            # Skip contacts that already have a LinkedIn URL
             if r.linkedin_url:
+                continue
+            if only_without_photo and r.has_photo:
                 continue
             Contact.get_or_create(
                 id=r.id,

@@ -1,63 +1,13 @@
-"""Write approved LinkedIn data back to Apple Contacts.app via AppleScript."""
+"""Write approved LinkedIn data back to Apple Contacts.app via the native Contacts framework."""
 
-import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
+import Contacts as CN
+import Foundation
 from rich.console import Console
 
 from .db import LinkedinMatch, db, get_approved_matches
-
-
-def _run_applescript(script: str) -> bool:
-    """Run AppleScript; return True on success."""
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        err = result.stderr.strip()
-        print(f"  [AppleScript error] {err}", file=sys.stderr)
-        return False
-    return True
-
-
-def _set_photo(contact_id: str, photo_path: str) -> bool:
-    script = f"""
-tell application "Contacts"
-    set p to (first person whose id is "{contact_id}")
-    set image of p to (read posix file "{photo_path}" as JPEG picture)
-end tell
-"""
-    return _run_applescript(script)
-
-
-def _add_linkedin_url(contact_id: str, linkedin_url: str) -> bool:
-    # Escape any double quotes in the URL (shouldn't happen but be safe)
-    safe_url = linkedin_url.replace('"', '\\"')
-    script = f"""
-tell application "Contacts"
-    set p to (first person whose id is "{contact_id}")
-    -- Check if LinkedIn URL already exists
-    set hasLinkedIn to false
-    repeat with u in urls of p
-        if value of u contains "linkedin.com" then
-            set hasLinkedIn to true
-            exit repeat
-        end if
-    end repeat
-    if not hasLinkedIn then
-        make new url at end of urls of p with properties {{label:"LinkedIn", value:"{safe_url}"}}
-    end if
-end tell
-"""
-    return _run_applescript(script)
-
-
-def _save_contacts() -> bool:
-    return _run_applescript('tell application "Contacts" to save')
 
 
 def apply_approved_matches(
@@ -65,10 +15,6 @@ def apply_approved_matches(
     contact_id_filter: Optional[str] = None,
     console: Optional[Console] = None,
 ) -> int:
-    """
-    Write approved LinkedIn data to Apple Contacts.
-    Returns number of contacts successfully updated.
-    """
     if console is None:
         console = Console()
 
@@ -84,6 +30,12 @@ def apply_approved_matches(
     if dry_run:
         console.print("[yellow]DRY RUN – no changes will be made.[/yellow]\n")
 
+    store = CN.CNContactStore.alloc().init()
+    keys_needed = [
+        CN.CNContactUrlAddressesKey,
+        CN.CNContactImageDataKey,
+    ]
+
     updated = 0
     failed = 0
 
@@ -97,48 +49,64 @@ def apply_approved_matches(
                 actions.append("set photo")
             if m.linkedin_url:
                 actions.append(f"add LinkedIn URL ({m.linkedin_url})")
-            console.print(f"  {label}: {', '.join(actions) if actions else 'nothing to do'}")
+            console.print(f"  {label}: {', '.join(actions) or 'nothing to do'}")
             updated += 1
             continue
 
+        # Fetch the mutable contact
+        cn_contact, error = store.unifiedContactWithIdentifier_keysToFetch_error_(
+            contact.id, keys_needed, None
+        )
+        if error or cn_contact is None:
+            console.print(f"  {label}: [red]could not fetch contact ({error})[/red]")
+            failed += 1
+            continue
+
+        mutable = cn_contact.mutableCopy()
         contact_ok = True
 
         # Set photo
         if m.photo_local:
             photo_path = Path(m.photo_local)
             if photo_path.exists():
-                ok = _set_photo(contact.id, str(photo_path))
-                if ok:
+                ns_data = Foundation.NSData.dataWithContentsOfFile_(str(photo_path))
+                if ns_data:
+                    mutable.setImageData_(ns_data)
                     console.print(f"  {label}: photo set ✓")
                 else:
-                    console.print(f"  {label}: [red]photo failed[/red]")
+                    console.print(f"  {label}: [red]could not read photo file[/red]")
                     contact_ok = False
             else:
                 console.print(f"  {label}: [yellow]photo file missing, skipping photo[/yellow]")
 
-        # Add LinkedIn URL
+        # Add LinkedIn URL (skip if already present)
         if m.linkedin_url:
-            ok = _add_linkedin_url(contact.id, m.linkedin_url)
-            if ok:
+            existing_urls = list(mutable.urlAddresses() or [])
+            already_has = any(
+                "linkedin.com" in str(lv.value()).lower() for lv in existing_urls
+            )
+            if not already_has:
+                new_lv = CN.CNLabeledValue.labeledValueWithLabel_value_(
+                    "LinkedIn", m.linkedin_url
+                )
+                mutable.setUrlAddresses_(existing_urls + [new_lv])
                 console.print(f"  {label}: LinkedIn URL added ✓")
-            else:
-                console.print(f"  {label}: [red]URL failed[/red]")
-                contact_ok = False
 
-        # Save after each contact so failures don't roll back others
-        _save_contacts()
+        # Save
+        save_request = CN.CNSaveRequest.alloc().init()
+        save_request.updateContact_(mutable)
+        success, error = store.executeSaveRequest_error_(save_request, None)
 
-        if contact_ok:
+        if success:
             with db.atomic():
                 m.status = "applied"
                 m.save()
             updated += 1
         else:
+            console.print(f"  {label}: [red]save failed: {error}[/red]")
             failed += 1
 
     if not dry_run:
-        console.print(
-            f"\n[green]Done.[/green] Applied: {updated}, Failed: {failed}"
-        )
+        console.print(f"\n[green]Done.[/green] Applied: {updated}, Failed: {failed}")
 
     return updated
