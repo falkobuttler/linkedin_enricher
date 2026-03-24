@@ -185,12 +185,12 @@ def search_contact(api, contact: Contact, min_confidence: float = 0.60) -> Optio
         except Exception:
             profile = {}
 
-        score = _score_candidate(contact, r, profile)
-        if score < min_confidence:
-            continue
-
         public_id = profile.get("publicIdentifier")
         if not public_id:
+            continue
+
+        score = _score_candidate(contact, r, profile)
+        if score < min_confidence:
             continue
 
         photo_url = _extract_photo_url(profile)
