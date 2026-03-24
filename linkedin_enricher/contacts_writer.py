@@ -103,8 +103,21 @@ def apply_approved_matches(
                 m.save()
             updated += 1
         else:
-            console.print(f"  {label}: [red]save failed: {error}[/red]")
-            failed += 1
+            # Error 134092 = Core Data faulting failure, almost always means the
+            # contact is in a read-only account (Exchange, Google, CardDAV, LDAP).
+            # Mark as skipped so re-running apply doesn't retry it.
+            error_code = error.code() if error else 0
+            if error_code == 134092:
+                console.print(
+                    f"  {label}: [yellow]skipped — contact is in a read-only account "
+                    f"(Exchange / Google / CardDAV). Update it manually.[/yellow]"
+                )
+                with db.atomic():
+                    m.status = "skipped"
+                    m.save()
+            else:
+                console.print(f"  {label}: [red]save failed: {error}[/red]")
+                failed += 1
 
     if not dry_run:
         console.print(f"\n[green]Done.[/green] Applied: {updated}, Failed: {failed}")
