@@ -79,14 +79,49 @@ def _get_linkedin_client():
     return client
 
 
-def _score_candidate(contact: Contact, result: dict) -> float:
-    """Score a LinkedIn search result against a contact record (0.0–1.0)."""
+_DASH_PROFILE_URL = (
+    "https://www.linkedin.com/voyager/api/identity/dash/profiles"
+    "/urn:li:fsd_profile:{urn_id}"
+    "?decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93"
+)
+
+
+def _fetch_dash_profile(api, urn_id: str) -> dict:
+    """Fetch a profile via the DASH API (replaces deprecated profileView endpoint)."""
+    url = _DASH_PROFILE_URL.format(urn_id=urn_id)
+    resp = api.client.session.get(url)
+    if resp.status_code != 200:
+        return {}
+    return resp.json()
+
+
+def _extract_photo_url(profile: dict) -> Optional[str]:
+    """Extract the largest available photo URL from a DASH profile dict."""
+    pic = profile.get("profilePicture", {}) or {}
+    vi = (pic.get("displayImageReference", {}) or {}).get("vectorImage", {}) or {}
+    root_url = vi.get("rootUrl", "")
+    artifacts = vi.get("artifacts", [])
+    # Artifacts are ordered smallest → largest; take the last one
+    for art in reversed(artifacts):
+        seg = art.get("fileIdentifyingUrlPathSegment", "")
+        if root_url and seg:
+            return root_url + seg
+    return None
+
+
+def _score_candidate(contact: Contact, result: dict, profile: dict) -> float:
+    """
+    Score a LinkedIn candidate against a contact (0.0–1.0).
+    result  = search_people row  (keys: name, jobtitle, location, urn_id)
+    profile = DASH profile dict  (keys: firstName, lastName, headline, …)
+    """
     score = 0.0
 
     # Name similarity (weight: 0.5)
+    # search result 'name' is already the full display name
     result_name = (
-        f"{result.get('firstName', '')} {result.get('lastName', '')}".strip()
-    )
+        profile.get("firstName", "") + " " + profile.get("lastName", "")
+    ).strip() or result.get("name", "")
     name_ratio = fuzz.token_sort_ratio(contact.full_name, result_name) / 100.0
     if name_ratio >= 0.85:
         score += 0.5
@@ -95,51 +130,25 @@ def _score_candidate(contact: Contact, result: dict) -> float:
     elif name_ratio >= 0.55:
         score += 0.1
 
-    # Company match (weight: 0.3)
+    # Company / headline match (weight: 0.3)
     if contact.organization:
-        headline = result.get("headline", "") or ""
-        summary = result.get("summary", "") or ""
-        company_text = (headline + " " + summary).lower()
+        headline = profile.get("headline", "") or result.get("jobtitle", "") or ""
         org_lower = contact.organization.lower()
-        if org_lower in company_text:
+        if org_lower in headline.lower():
             score += 0.3
-        elif fuzz.partial_ratio(org_lower, company_text) >= 70:
+        elif fuzz.partial_ratio(org_lower, headline.lower()) >= 70:
             score += 0.15
 
     # Email domain match (weight: 0.2)
     if contact.email and "@" in contact.email:
         domain = contact.email.split("@")[1].lower()
-        # Exclude common free providers
         generic = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "me.com"}
         if domain not in generic:
-            result_str = str(result).lower()
-            if domain in result_str:
+            profile_str = str(profile).lower()
+            if domain in profile_str:
                 score += 0.2
 
     return min(score, 1.0)
-
-
-def _extract_photo_url(profile: dict) -> Optional[str]:
-    """Extract the best available profile photo URL from a full profile dict."""
-    display_image = profile.get("profilePicture", {}) or {}
-    root = display_image.get("displayImage~", {}) or display_image.get("displayImage", {})
-    elements = root.get("elements", []) if isinstance(root, dict) else []
-    # Elements are ordered from smallest to largest; take the last (largest)
-    for element in reversed(elements):
-        for identifier in element.get("identifiers", []):
-            url = identifier.get("identifier")
-            if url and url.startswith("http"):
-                return url
-    # Fallback: miniProfile in search result
-    mini = profile.get("miniProfile", {}) or {}
-    pic = mini.get("picture", {}) or {}
-    artifacts = pic.get("com.linkedin.common.VectorImage", {}).get("artifacts", [])
-    for art in reversed(artifacts):
-        root_url = pic.get("com.linkedin.common.VectorImage", {}).get("rootUrl", "")
-        seg = art.get("fileIdentifyingUrlPathSegment", "")
-        if root_url and seg:
-            return root_url + seg
-    return None
 
 
 def search_contact(api, contact: Contact, min_confidence: float = 0.60) -> Optional[MatchCandidate]:
@@ -154,7 +163,7 @@ def search_contact(api, contact: Contact, min_confidence: float = 0.60) -> Optio
         raise RuntimeError(str(exc)) from exc
 
     if not results:
-        # Fallback: search by name + email domain
+        # Fallback: name + email domain
         if contact.email and "@" in contact.email:
             domain = contact.email.split("@")[1]
             try:
@@ -166,25 +175,30 @@ def search_contact(api, contact: Contact, min_confidence: float = 0.60) -> Optio
 
     best: Optional[MatchCandidate] = None
     for r in results:
-        score = _score_candidate(contact, r)
+        urn_id = r.get("urn_id")
+        if not urn_id:
+            continue
+
+        # Fetch full DASH profile (needed for publicIdentifier, photo, headline)
+        try:
+            profile = _fetch_dash_profile(api, urn_id)
+        except Exception:
+            profile = {}
+
+        score = _score_candidate(contact, r, profile)
         if score < min_confidence:
             continue
 
-        # Fetch full profile to get photo URL
-        public_id = r.get("publicIdentifier") or r.get("public_id")
+        public_id = profile.get("publicIdentifier")
         if not public_id:
             continue
 
-        try:
-            profile = api.get_profile(public_id)
-            photo_url = _extract_photo_url(profile)
-        except Exception:
-            profile = {}
-            photo_url = None
-
+        photo_url = _extract_photo_url(profile)
         linkedin_url = f"https://www.linkedin.com/in/{public_id}"
-        result_name = f"{r.get('firstName', '')} {r.get('lastName', '')}".strip()
-        headline = r.get("headline") or profile.get("headline", "")
+        result_name = (
+            profile.get("firstName", "") + " " + profile.get("lastName", "")
+        ).strip() or r.get("name", "")
+        headline = profile.get("headline") or r.get("jobtitle", "")
 
         candidate = MatchCandidate(
             linkedin_url=linkedin_url,
