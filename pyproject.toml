@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linkedin-enricher"
+version = "0.1.0"
+description = "Enrich Apple Contacts with LinkedIn profile photos and URLs"
+requires-python = ">=3.11"
+dependencies = [
+    "linkedin-api>=2.3.1",
+    "flask>=3.1.3",
+    "pillow>=12.1.1",
+    "peewee>=4.0.2",
+    "click>=8.3.1",
+    "rich>=14.3.3",
+    "httpx>=0.28.1",
+    "keyring>=25.7.0",
+    "thefuzz>=0.22.1",
+    "python-levenshtein>=0.27.3",
+]
+
+[project.scripts]
+linkedin-enricher = "linkedin_enricher.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["linkedin_enricher*"]

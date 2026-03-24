@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LinkedIn Contact Enricher – Review</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    background: #f5f5f7;
+    color: #1d1d1f;
+  }
+
+  /* ── Sticky header ─────────────────────────────────────────────────── */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: #fff;
+    border-bottom: 1px solid #d2d2d7;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; font-weight: 600; flex: 1; }
+  .badge {
+    background: #0a66c2;
+    color: #fff;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .btn {
+    cursor: pointer;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    transition: opacity .15s;
+  }
+  .btn:hover { opacity: .85; }
+  .btn-primary { background: #0a66c2; color: #fff; }
+  .btn-secondary { background: #e5e5ea; color: #1d1d1f; }
+  .btn-danger { background: #ff3b30; color: #fff; }
+
+  /* ── Table ─────────────────────────────────────────────────────────── */
+  .table-wrap { padding: 16px 24px; overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  thead th {
+    background: #f5f5f7;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #6e6e73;
+    position: sticky;
+    top: 65px;
+  }
+  tbody tr { border-bottom: 1px solid #f0f0f5; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #f9f9fb; }
+  td { padding: 10px 14px; vertical-align: middle; }
+
+  /* ── Photo ─────────────────────────────────────────────────────────── */
+  .photo-cell { width: 60px; text-align: center; }
+  .photo-cell img {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid #d2d2d7;
+  }
+  .no-photo {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: #e5e5ea;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    color: #8e8e93;
+  }
+
+  /* ── Confidence bar ────────────────────────────────────────────────── */
+  .conf-wrap { display: flex; align-items: center; gap: 8px; min-width: 110px; }
+  .conf-bar {
+    flex: 1;
+    height: 6px;
+    border-radius: 3px;
+    background: #e5e5ea;
+    overflow: hidden;
+  }
+  .conf-fill { height: 100%; border-radius: 3px; }
+  .conf-high  { background: #34c759; }
+  .conf-mid   { background: #ff9f0a; }
+  .conf-low   { background: #ff3b30; }
+  .conf-label { font-size: 12px; color: #6e6e73; width: 32px; text-align: right; }
+
+  /* ── Actions ───────────────────────────────────────────────────────── */
+  .action-group { display: flex; gap: 6px; }
+  .action-group label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1.5px solid transparent;
+    transition: all .12s;
+    user-select: none;
+  }
+  .action-group input[type=radio] { display: none; }
+
+  .action-group input[value=approved]:checked + label,
+  label[data-for=approved].active { border-color: #34c759; color: #1a7f37; background: #d1fae5; }
+  .action-group input[value=rejected]:checked + label,
+  label[data-for=rejected].active { border-color: #ff3b30; color: #c0392b; background: #ffe3e3; }
+  .action-group input[value=skipped]:checked + label,
+  label[data-for=skipped].active  { border-color: #8e8e93; color: #6e6e73; background: #f0f0f5; }
+
+  .action-group label:hover { opacity: .8; }
+
+  /* ── Name/org ──────────────────────────────────────────────────────── */
+  .name { font-weight: 600; }
+  .sub  { font-size: 12px; color: #6e6e73; }
+  .linkedin-link { color: #0a66c2; text-decoration: none; font-size: 12px; }
+  .linkedin-link:hover { text-decoration: underline; }
+
+  /* ── Empty state ───────────────────────────────────────────────────── */
+  .empty {
+    text-align: center;
+    padding: 80px 24px;
+    color: #6e6e73;
+  }
+  .empty h2 { font-size: 22px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>LinkedIn Contact Enricher</h1>
+  <span id="approve-count" class="badge">0 to approve</span>
+  <button class="btn btn-secondary" onclick="selectAll('approved')">Approve all ✓</button>
+  <button class="btn btn-secondary" onclick="selectAll('skipped')">Skip all</button>
+  <button class="btn btn-secondary" onclick="selectHighConf()">Approve high-confidence (≥80%)</button>
+  <button class="btn btn-primary" onclick="submitDecisions()">Submit decisions →</button>
+</header>
+
+<div class="table-wrap">
+{% if rows %}
+<table>
+  <thead>
+    <tr>
+      <th class="photo-cell">Photo</th>
+      <th>Your Contact</th>
+      <th>LinkedIn Match</th>
+      <th>Confidence</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+  <tr data-id="{{ row.id }}" data-conf="{{ row.confidence_pct }}">
+    <td class="photo-cell">
+      {% if row.photo_file %}
+        <img src="/photos/{{ row.photo_file }}" alt="{{ row.linkedin_name }}">
+      {% else %}
+        <span class="no-photo">?</span>
+      {% endif %}
+    </td>
+    <td>
+      <div class="name">{{ row.contact_name }}</div>
+      {% if row.contact_org %}<div class="sub">{{ row.contact_org }}</div>{% endif %}
+      {% if row.contact_email %}<div class="sub">{{ row.contact_email }}</div>{% endif %}
+    </td>
+    <td>
+      <div class="name">{{ row.linkedin_name }}</div>
+      {% if row.headline %}<div class="sub">{{ row.headline }}</div>{% endif %}
+      {% if row.linkedin_url %}
+        <a class="linkedin-link" href="{{ row.linkedin_url }}" target="_blank">↗ View profile</a>
+      {% endif %}
+    </td>
+    <td>
+      <div class="conf-wrap">
+        <div class="conf-bar">
+          <div class="conf-fill {% if row.confidence_pct >= 80 %}conf-high{% elif row.confidence_pct >= 60 %}conf-mid{% else %}conf-low{% endif %}"
+               style="width: {{ row.confidence_pct }}%"></div>
+        </div>
+        <span class="conf-label">{{ row.confidence_pct }}%</span>
+      </div>
+    </td>
+    <td>
+      <div class="action-group">
+        <input type="radio" name="action-{{ row.id }}" id="app-{{ row.id }}" value="approved"
+               {% if row.default_action == 'approved' %}checked{% endif %}
+               onchange="updateCount()">
+        <label for="app-{{ row.id }}">✓ Approve</label>
+
+        <input type="radio" name="action-{{ row.id }}" id="rej-{{ row.id }}" value="rejected"
+               {% if row.default_action == 'rejected' %}checked{% endif %}
+               onchange="updateCount()">
+        <label for="rej-{{ row.id }}">✗ Reject</label>
+
+        <input type="radio" name="action-{{ row.id }}" id="ski-{{ row.id }}" value="skipped"
+               {% if row.default_action == 'skipped' %}checked{% endif %}
+               onchange="updateCount()">
+        <label for="ski-{{ row.id }}">– Skip</label>
+      </div>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">
+  <h2>No pending matches</h2>
+  <p>Run <code>linkedin-enricher scrape</code> to search for LinkedIn profiles,<br>
+     then come back here to review.</p>
+</div>
+{% endif %}
+</div>
+
+<script>
+function updateCount() {
+  const count = document.querySelectorAll('input[type=radio][value=approved]:checked').length;
+  document.getElementById('approve-count').textContent =
+    count === 1 ? '1 to approve' : count + ' to approve';
+}
+
+function selectAll(action) {
+  document.querySelectorAll('tbody tr').forEach(row => {
+    const id = row.dataset.id;
+    const radio = document.getElementById(
+      action === 'approved' ? 'app-' + id :
+      action === 'rejected' ? 'rej-' + id : 'ski-' + id
+    );
+    if (radio) radio.checked = true;
+  });
+  updateCount();
+}
+
+function selectHighConf() {
+  document.querySelectorAll('tbody tr').forEach(row => {
+    const id = row.dataset.id;
+    const conf = parseInt(row.dataset.conf, 10);
+    const radio = document.getElementById(conf >= 80 ? 'app-' + id : 'ski-' + id);
+    if (radio) radio.checked = true;
+  });
+  updateCount();
+}
+
+async function submitDecisions() {
+  const rows = document.querySelectorAll('tbody tr');
+  const decisions = [];
+  rows.forEach(row => {
+    const id = parseInt(row.dataset.id, 10);
+    const checked = row.querySelector('input[type=radio]:checked');
+    if (checked) decisions.push({ id, action: checked.value });
+  });
+
+  if (decisions.length === 0) {
+    alert('No decisions to submit.');
+    return;
+  }
+
+  const approved = decisions.filter(d => d.action === 'approved').length;
+  const rejected = decisions.filter(d => d.action === 'rejected').length;
+  const skipped  = decisions.filter(d => d.action === 'skipped').length;
+
+  if (!confirm(`Submit ${decisions.length} decisions?\n\n✓ Approve: ${approved}\n✗ Reject: ${rejected}\n– Skip: ${skipped}`)) {
+    return;
+  }
+
+  const btn = document.querySelector('.btn-primary');
+  btn.disabled = true;
+  btn.textContent = 'Submitting…';
+
+  try {
+    const resp = await fetch('/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(decisions),
+    });
+    const data = await resp.json();
+    window.location.href = `/done?approved=${data.approved}&rejected=${data.rejected}&skipped=${data.skipped}`;
+  } catch (err) {
+    alert('Error submitting: ' + err);
+    btn.disabled = false;
+    btn.textContent = 'Submit decisions →';
+  }
+}
+
+// Initialize count on load
+updateCount();
+</script>
+</body>
+</html>
