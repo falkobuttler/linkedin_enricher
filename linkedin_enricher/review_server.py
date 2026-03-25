@@ -4,9 +4,10 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from .config import FLASK_PORT, PHOTOS_DIR
+from .contacts_writer import apply_approved_matches
 from .db import LinkedinMatch, db, get_pending_matches
 from .image_processor import download_and_resize
 
@@ -68,7 +69,9 @@ def index():
 
 @app.route("/approve", methods=["POST"])
 def approve():
-    decisions = request.json  # [{id: int, action: "approved"|"rejected"|"skipped"}, ...]
+    decisions = (
+        request.json
+    )  # [{id: int, action: "approved"|"rejected"|"skipped"}, ...]
     if not decisions:
         return jsonify({"error": "no decisions"}), 400
 
@@ -87,25 +90,28 @@ def approve():
             except LinkedinMatch.DoesNotExist:
                 pass
 
+    # Apply approved matches immediately
+    applied = apply_approved_matches()
+    counts["applied"] = applied
+    counts["failed"] = counts["approved"] - applied
+
     return jsonify(counts)
 
 
 @app.route("/done")
 def done():
-    approved = request.args.get("approved", 0)
-    rejected = request.args.get("rejected", 0)
-    skipped = request.args.get("skipped", 0)
     return render_template(
         "done.html",
-        approved=approved,
-        rejected=rejected,
-        skipped=skipped,
+        applied=request.args.get("applied", 0),
+        failed=request.args.get("failed", 0),
+        rejected=request.args.get("rejected", 0),
+        skipped=request.args.get("skipped", 0),
     )
 
 
 def run_review_server(port: int = FLASK_PORT, open_browser: bool = True):
     """Start Flask review server and open browser."""
-    url = f"http://localhost:{port}"
+    url = f"http://127.0.0.1:{port}"
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     print(f"Review UI at {url}  (Ctrl-C to stop)")

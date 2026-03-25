@@ -51,14 +51,29 @@
   .btn-danger { background: #ff3b30; color: #fff; }
 
   /* ── Table ─────────────────────────────────────────────────────────── */
-  .table-wrap { padding: 16px 24px; overflow-x: auto; }
+  /*
+   * .table-wrap is the scroll container. thead th is sticky at top:0 inside it.
+   * overflow:hidden must NOT appear on any ancestor of thead th — it breaks sticky.
+   */
+  .table-wrap {
+    padding: 16px 24px;
+    height: calc(100vh - var(--header-h, 65px));
+    overflow-y: auto;
+    overflow-x: auto;
+  }
   table {
     width: 100%;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     background: #fff;
     border-radius: 12px;
-    overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  thead {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f5f5f7;
   }
   thead th {
     background: #f5f5f7;
@@ -69,8 +84,6 @@
     text-transform: uppercase;
     letter-spacing: .04em;
     color: #6e6e73;
-    position: sticky;
-    top: 65px;
   }
   tbody tr { border-bottom: 1px solid #f0f0f5; }
   tbody tr:last-child { border-bottom: none; }
@@ -299,13 +312,21 @@ async function submitDecisions() {
       body: JSON.stringify(decisions),
     });
     const data = await resp.json();
-    window.location.href = `/done?approved=${data.approved}&rejected=${data.rejected}&skipped=${data.skipped}`;
+    window.location.href = `/done?applied=${data.applied}&failed=${data.failed}&rejected=${data.rejected}&skipped=${data.skipped}`;
   } catch (err) {
     alert('Error submitting: ' + err);
     btn.disabled = false;
     btn.textContent = 'Submit decisions →';
   }
 }
+
+// Set header height CSS variable for sticky thead offset
+function setHeaderOffset() {
+  const h = document.querySelector('header');
+  if (h) document.documentElement.style.setProperty('--header-h', h.offsetHeight + 'px');
+}
+setHeaderOffset();
+new ResizeObserver(setHeaderOffset).observe(document.querySelector('header'));
 
 // Initialize count on load
 updateCount();

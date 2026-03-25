@@ -24,32 +24,29 @@
   .stat { text-align: center; }
   .stat .num { font-size: 28px; font-weight: 700; }
   .stat .lbl { font-size: 12px; color: #6e6e73; text-transform: uppercase; }
-  .green { color: #34c759; }
-  .red   { color: #ff3b30; }
-  .gray  { color: #8e8e93; }
-  code {
-    display: inline-block;
-    background: #f5f5f7;
-    border-radius: 8px;
-    padding: 10px 18px;
-    font-family: "SF Mono", monospace;
-    font-size: 14px;
-    color: #1d1d1f;
-    margin-bottom: 16px;
-  }
+  .green  { color: #34c759; }
+  .orange { color: #ff9f0a; }
+  .red    { color: #ff3b30; }
+  .gray   { color: #8e8e93; }
 </style>
 </head>
 <body>
 <div class="card">
   <div class="icon">✅</div>
-  <h1>Review complete</h1>
-  <p>Your decisions have been saved. Run the command below to write approved changes to Apple Contacts.</p>
+  <h1>Done</h1>
+  <p>Approved contacts have been written to Apple Contacts.</p>
 
   <div class="stats">
     <div class="stat">
-      <div class="num green">{{ approved }}</div>
-      <div class="lbl">Approved</div>
+      <div class="num green">{{ applied }}</div>
+      <div class="lbl">Applied</div>
     </div>
+    {% if failed|int > 0 %}
+    <div class="stat">
+      <div class="num orange">{{ failed }}</div>
+      <div class="lbl">Failed</div>
+    </div>
+    {% endif %}
     <div class="stat">
       <div class="num red">{{ rejected }}</div>
       <div class="lbl">Rejected</div>
@@ -60,9 +57,9 @@
     </div>
   </div>
 
-  <code>linkedin-enricher apply</code>
-  <br>
-  <small style="color:#6e6e73">Add <code>--dry-run</code> to preview changes first.</small>
+  {% if failed|int > 0 %}
+  <p style="color:#ff9f0a; font-size:13px;">{{ failed }} contact(s) failed to apply. Run <code>linkedin-enricher apply</code> to retry.</p>
+  {% endif %}
 </div>
 </body>
 </html>

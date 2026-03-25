@@ -17,14 +17,32 @@ def cli():
 
 
 @cli.command()
-@click.option("--limit", "-n", default=None, type=int, help="Max contacts to search (for incremental runs)")
-@click.option("--min-confidence", default=0.40, show_default=True, type=float, help="Minimum confidence score to store a match (0.0–1.0)")
-def scrape(limit: Optional[int], min_confidence: float):
+@click.option(
+    "--limit",
+    "-n",
+    default=None,
+    type=int,
+    help="Max contacts to search (for incremental runs)",
+)
+@click.option(
+    "--min-confidence",
+    default=0.40,
+    show_default=True,
+    type=float,
+    help="Minimum confidence score to store a match (0.0–1.0)",
+)
+@click.option(
+    "--retry-errors",
+    is_flag=True,
+    help="Re-scrape contacts that previously errored out",
+)
+def scrape(limit: Optional[int], min_confidence: float, retry_errors: bool):
     """
     Search LinkedIn for un-matched contacts and store results in the local DB.
 
     Safe to re-run: already-searched contacts are skipped. Use --limit to
     process contacts in increments across multiple sessions (LinkedIn rate limits).
+    Use --retry-errors to re-attempt contacts that failed in a previous run.
     """
     from .contacts_reader import load_contacts_to_db
     from .db import init_db
@@ -34,14 +52,27 @@ def scrape(limit: Optional[int], min_confidence: float):
 
     console.print("[bold]Step 1:[/bold] Loading contacts from Apple Contacts.app...")
     loaded = load_contacts_to_db(only_without_photo=True)
-    console.print(f"  Contacts loaded (without photo/LinkedIn): [green]{loaded}[/green]")
+    console.print(
+        f"  Contacts loaded (without photo/LinkedIn): [green]{loaded}[/green]"
+    )
 
     console.print("\n[bold]Step 2:[/bold] Searching LinkedIn...")
-    scrape_all(limit=limit, min_confidence=min_confidence, console=console)
+    scrape_all(
+        limit=limit,
+        min_confidence=min_confidence,
+        retry_errors=retry_errors,
+        console=console,
+    )
 
 
 @cli.command()
-@click.option("--port", default=5000, show_default=True, type=int, help="Port for the review web UI")
+@click.option(
+    "--port",
+    default=5000,
+    show_default=True,
+    type=int,
+    help="Port for the review web UI",
+)
 @click.option("--no-browser", is_flag=True, help="Don't auto-open the browser")
 def review(port: int, no_browser: bool):
     """
@@ -69,8 +100,15 @@ def review(port: int, no_browser: bool):
 
 
 @cli.command()
-@click.option("--dry-run", is_flag=True, help="Preview changes without writing to Contacts")
-@click.option("--contact-id", default=None, type=str, help="Apply only for a specific contact GUID")
+@click.option(
+    "--dry-run", is_flag=True, help="Preview changes without writing to Contacts"
+)
+@click.option(
+    "--contact-id",
+    default=None,
+    type=str,
+    help="Apply only for a specific contact GUID",
+)
 def apply(dry_run: bool, contact_id: Optional[str]):
     """
     Write approved LinkedIn data to Apple Contacts.app.
@@ -97,7 +135,9 @@ def status():
     init_db()
     s = summary()
 
-    table = Table(title="linkedin-enricher status", show_header=True, header_style="bold")
+    table = Table(
+        title="linkedin-enricher status", show_header=True, header_style="bold"
+    )
     table.add_column("Stage", style="cyan")
     table.add_column("Count", justify="right")
 
@@ -111,6 +151,29 @@ def status():
     table.add_row("Errors / no results", str(s["errors"]))
 
     console.print(table)
+
+
+@cli.command("reset-credentials")
+def reset_credentials():
+    """Delete cached LinkedIn session cookies, forcing re-authentication on next scrape.
+
+    Use this when LinkedIn silently returns empty search results (soft-block).
+    Your email/password in the macOS Keychain are not affected.
+    """
+    from pathlib import Path
+    import linkedin_api.settings as li_settings
+
+    cookies_dir = Path(li_settings.COOKIE_PATH)
+    deleted = list(cookies_dir.glob("*.jr")) if cookies_dir.exists() else []
+    if not deleted:
+        console.print("[yellow]No cached LinkedIn session found.[/yellow]")
+        return
+    for f in deleted:
+        f.unlink()
+    console.print(f"[green]Deleted {len(deleted)} cached session file(s).[/green]")
+    console.print(
+        "Re-authentication will happen automatically on the next [bold]scrape[/bold]."
+    )
 
 
 @cli.command()
@@ -149,23 +212,33 @@ def export(output: str):
 
     with open(output, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "contact_name", "contact_org", "contact_email",
-            "linkedin_name", "linkedin_url", "headline",
-            "confidence", "status", "error",
-        ])
+        writer.writerow(
+            [
+                "contact_name",
+                "contact_org",
+                "contact_email",
+                "linkedin_name",
+                "linkedin_url",
+                "headline",
+                "confidence",
+                "status",
+                "error",
+            ]
+        )
         for m in matches:
-            writer.writerow([
-                m.contact.full_name,
-                m.contact.organization or "",
-                m.contact.email or "",
-                m.linkedin_name or "",
-                m.linkedin_url or "",
-                m.headline or "",
-                f"{m.confidence:.2f}",
-                m.status,
-                m.error or "",
-            ])
+            writer.writerow(
+                [
+                    m.contact.full_name,
+                    m.contact.organization or "",
+                    m.contact.email or "",
+                    m.linkedin_name or "",
+                    m.linkedin_url or "",
+                    m.headline or "",
+                    f"{m.confidence:.2f}",
+                    m.status,
+                    m.error or "",
+                ]
+            )
 
     console.print(f"[green]Exported to:[/green] {output}")
 

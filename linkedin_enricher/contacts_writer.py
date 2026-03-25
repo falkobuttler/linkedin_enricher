@@ -1,4 +1,4 @@
-"""Write approved LinkedIn data back to Apple Contacts.app via the native Contacts framework."""
+"""Write approved LinkedIn data back to Apple Contacts.app via the native framework."""
 
 import subprocess
 from pathlib import Path
@@ -8,43 +8,55 @@ import Contacts as CN
 import Foundation
 from rich.console import Console
 
-from .db import LinkedinMatch, db, get_approved_matches
+from .db import db, get_approved_matches
 
 
-def _applescript_apply(contact_id: str, linkedin_url: Optional[str], photo_path: Optional[str]) -> Optional[str]:
+def _applescript_apply(
+    contact_id: str, linkedin_url: Optional[str], photo_path: Optional[str]
+) -> Optional[str]:
     """
     Fallback writer using AppleScript (Apple Events), bypassing Core Data.
     Returns None on success, error string on failure.
     """
-    script_parts = [f'tell application "Contacts"\nset p to (first person whose id is "{contact_id}")']
+    script_parts = [
+        f'tell application "Contacts"\n'
+        f'set p to (first person whose id is "{contact_id}")'
+    ]
 
     if photo_path and Path(photo_path).exists():
-        script_parts.append(f'set image of p to (read posix file "{photo_path}" as JPEG picture)')
+        script_parts.append(
+            f'set image of p to (read posix file "{photo_path}" as JPEG picture)'
+        )
 
     if linkedin_url:
         safe_url = linkedin_url.replace('"', '\\"')
         script_parts.append(
-            f'set hasLinkedIn to false\n'
-            f'repeat with u in urls of p\n'
+            f"set hasLinkedIn to false\n"
+            f"repeat with u in urls of p\n"
             f'    if value of u contains "linkedin.com" then\n'
-            f'        set hasLinkedIn to true\n'
-            f'        exit repeat\n'
-            f'    end if\n'
-            f'end repeat\n'
-            f'if not hasLinkedIn then\n'
-            f'    make new url at end of urls of p with properties {{label:"LinkedIn", value:"{safe_url}"}}\n'
-            f'end if'
+            f"        set hasLinkedIn to true\n"
+            f"        exit repeat\n"
+            f"    end if\n"
+            f"end repeat\n"
+            f"if not hasLinkedIn then\n"
+            f"    make new url at end of urls of p"
+            f' with properties {{label:"LinkedIn", value:"{safe_url}"}}\n'
+            f"end if"
         )
 
     script_parts.append("save\nend tell")
     script = "\n".join(script_parts)
 
-    with __import__("tempfile").NamedTemporaryFile(mode="w", suffix=".applescript", delete=False) as f:
+    with __import__("tempfile").NamedTemporaryFile(
+        mode="w", suffix=".applescript", delete=False
+    ) as f:
         f.write(script)
         script_path = f.name
 
     try:
-        result = subprocess.run(["osascript", script_path], capture_output=True, text=True)
+        result = subprocess.run(
+            ["osascript", script_path], capture_output=True, text=True
+        )
     finally:
         Path(script_path).unlink(missing_ok=True)
 
@@ -106,7 +118,6 @@ def apply_approved_matches(
             continue
 
         mutable = cn_contact.mutableCopy()
-        contact_ok = True
 
         # Set photo
         if m.photo_local:
@@ -118,9 +129,11 @@ def apply_approved_matches(
                     console.print(f"  {label}: photo set ✓")
                 else:
                     console.print(f"  {label}: [red]could not read photo file[/red]")
-                    contact_ok = False
+                    pass  # continue — URL may still be applied
             else:
-                console.print(f"  {label}: [yellow]photo file missing, skipping photo[/yellow]")
+                console.print(
+                    f"  {label}: [yellow]photo file missing, skipping photo[/yellow]"
+                )
 
         # Add LinkedIn URL (skip if already present)
         if m.linkedin_url:
@@ -150,7 +163,10 @@ def apply_approved_matches(
             # Fall back to AppleScript which uses Apple Events instead of Core Data.
             error_code = error.code() if error else 0
             if error_code == 134092:
-                console.print(f"  {label}: [yellow]PyObjC save failed (Core Data fault), trying AppleScript fallback...[/yellow]")
+                console.print(
+                    f"  {label}: [yellow]PyObjC save failed (Core Data fault),"
+                    " trying AppleScript fallback...[/yellow]"
+                )
                 as_err = _applescript_apply(
                     contact.id,
                     m.linkedin_url if m.linkedin_url else None,
@@ -163,7 +179,10 @@ def apply_approved_matches(
                         m.save()
                     updated += 1
                 else:
-                    console.print(f"  {label}: [red]AppleScript fallback also failed: {as_err}[/red]")
+                    console.print(
+                        f"  {label}: [red]AppleScript fallback also failed:"
+                        f" {as_err}[/red]"
+                    )
                     failed += 1
             else:
                 console.print(f"  {label}: [red]save failed: {error}[/red]")

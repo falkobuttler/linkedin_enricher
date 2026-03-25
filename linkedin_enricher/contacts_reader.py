@@ -21,7 +21,9 @@ class ContactRecord:
 
 def _ensure_access() -> None:
     """Check Contacts authorization; exit with a clear message if denied."""
-    status = CN.CNContactStore.authorizationStatusForEntityType_(CN.CNEntityTypeContacts)
+    status = CN.CNContactStore.authorizationStatusForEntityType_(
+        CN.CNEntityTypeContacts
+    )
     if status == CN.CNAuthorizationStatusAuthorized:
         return
     if status == CN.CNAuthorizationStatusNotDetermined:
@@ -31,9 +33,12 @@ def _ensure_access() -> None:
         def handler(granted, error):
             result[0] = granted
 
-        store.requestAccessForEntityType_completionHandler_(CN.CNEntityTypeContacts, handler)
+        store.requestAccessForEntityType_completionHandler_(
+            CN.CNEntityTypeContacts, handler
+        )
         # Spin briefly while the system shows the permission dialog
         import time
+
         for _ in range(300):
             if result[0] is not None:
                 break
@@ -67,7 +72,9 @@ def export_contacts() -> list[ContactRecord]:
     print("Fetching contacts via Contacts framework...", flush=True)
 
     store = CN.CNContactStore.alloc().init()
-    fetch_request = CN.CNContactFetchRequest.alloc().initWithKeysToFetch_(_KEYS_TO_FETCH)
+    fetch_request = CN.CNContactFetchRequest.alloc().initWithKeysToFetch_(
+        _KEYS_TO_FETCH
+    )
     fetch_request.setUnifyResults_(True)
 
     records = []
@@ -93,14 +100,16 @@ def export_contacts() -> list[ContactRecord]:
                 linkedin_url = url
                 break
 
-        records.append(ContactRecord(
-            id=str(contact.identifier()),
-            full_name=name,
-            organization=org,
-            email=email,
-            has_photo=bool(contact.imageDataAvailable()),
-            linkedin_url=linkedin_url,
-        ))
+        records.append(
+            ContactRecord(
+                id=str(contact.identifier()),
+                full_name=name,
+                organization=org,
+                email=email,
+                has_photo=bool(contact.imageDataAvailable()),
+                linkedin_url=linkedin_url,
+            )
+        )
 
     success, error = store.enumerateContactsWithFetchRequest_error_usingBlock_(
         fetch_request, None, handler
