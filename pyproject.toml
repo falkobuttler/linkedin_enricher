@@ -6,7 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "linkedin-enricher"
 version = "0.1.0"
 description = "Enrich Apple Contacts with LinkedIn profile photos and URLs"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
+
+[project.urls]
+Homepage = "https://github.com/falkobuttler/linkedin_enricher"
+Repository = "https://github.com/falkobuttler/linkedin_enricher"
 dependencies = [
     "linkedin-api>=2.3.1",
     "flask>=3.1.3",

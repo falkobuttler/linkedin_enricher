@@ -85,6 +85,12 @@ LinkedIn's unofficial API has limits. The scraper:
 
 ---
 
+## Disclaimer
+
+This tool uses an **unofficial, reverse-engineered LinkedIn API** and is not affiliated with or endorsed by LinkedIn. Use it responsibly and at your own risk — it may violate [LinkedIn's Terms of Service](https://www.linkedin.com/legal/user-agreement). The author assumes no liability for account restrictions or any other consequences arising from its use.
+
+---
+
 ## Data location
 
 ```

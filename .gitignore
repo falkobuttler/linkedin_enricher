@@ -16,6 +16,9 @@ build/
 .idea/
 *.swp
 
+# Claude Code
+.claude/
+
 # macOS
 .DS_Store
 
