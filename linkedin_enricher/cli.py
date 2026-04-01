@@ -100,6 +100,96 @@ def review(port: int, no_browser: bool):
 
 
 @cli.command()
+@click.option("--debug", is_flag=True, help="Print raw profile keys to diagnose extraction")
+@click.option("-n", "--limit", default=None, type=int, help="Max profiles to fetch")
+def enrich(debug: bool, limit: Optional[int]):
+    """Fetch current title and company for already-matched contacts that are missing them.
+
+    Useful after upgrading to a version that added these fields.
+    Authenticates with LinkedIn and fetches one DASH profile per matched contact.
+    """
+    from .db import LinkedinMatch, db, init_db
+    from .linkedin_scraper import (
+        _fetch_dash_profile_by_public_id,
+        _extract_current_position,
+        _get_linkedin_client,
+    )
+
+    init_db()
+
+    # Find matches with a URL but no current_title/current_company yet
+    matches = list(
+        LinkedinMatch.select()
+        .where(
+            LinkedinMatch.linkedin_url.is_null(False)
+            & LinkedinMatch.current_title.is_null(True)
+            & LinkedinMatch.current_company.is_null(True)
+        )
+    )
+
+    if limit:
+        matches = matches[:limit]
+
+    if not matches:
+        console.print("[yellow]No matches need enriching.[/yellow]")
+        return
+
+    console.print(f"[green]Matches to enrich:[/green] {len(matches)}")
+
+    try:
+        api = _get_linkedin_client()
+    except Exception as exc:
+        console.print(f"[red]LinkedIn login failed: {exc}[/red]")
+        sys.exit(1)
+
+    from .linkedin_scraper import _TokenBucket
+    from .config import RATE_LIMIT_RPM, BATCH_SIZE, BATCH_PAUSE_SECONDS
+
+    bucket = _TokenBucket(RATE_LIMIT_RPM)
+    updated = 0
+    failed = 0
+    for i, m in enumerate(matches):
+        bucket.acquire()
+
+        public_id = m.linkedin_url.rstrip("/").split("/")[-1]
+        try:
+            profile = _fetch_dash_profile_by_public_id(api, public_id)
+        except Exception as exc:
+            console.print(f"  [red]{m.linkedin_name}: {exc}[/red]")
+            failed += 1
+            continue
+
+        if not profile:
+            console.print(
+                f"  [yellow]{m.linkedin_name}: no profile returned[/yellow]"
+            )
+            failed += 1
+            continue
+
+        if debug:
+            console.print(f"  [dim]profile keys: {list(profile.keys())}[/dim]")
+
+        title, company = _extract_current_position(profile)
+        with db.atomic():
+            m.current_title = title
+            m.current_company = company
+            m.save()
+
+        console.print(
+            f"  [green]✓[/green] {m.linkedin_name}:"
+            f" {title or '—'} @ {company or '—'}"
+        )
+        updated += 1
+
+        if (i + 1) % BATCH_SIZE == 0 and (i + 1) < len(matches):
+            console.print(f"  [yellow]Pausing {BATCH_PAUSE_SECONDS}s...[/yellow]")
+            import time
+            time.sleep(BATCH_PAUSE_SECONDS)
+
+    console.print(f"\n[green]Done.[/green] Updated: {updated}, Failed: {failed}")
+
+
+@cli.command()
 @click.option(
     "--dry-run", is_flag=True, help="Preview changes without writing to Contacts"
 )

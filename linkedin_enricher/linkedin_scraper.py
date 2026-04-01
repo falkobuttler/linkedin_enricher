@@ -75,12 +75,8 @@ def _should_skip(contact: Contact) -> Optional[str]:
     name_lower = name.lower().replace("\u2019", "'")
     words = name_lower.split()
 
-    # "Ethan's Mom", "Oliver's Dad", etc.
-    if len(words) >= 2 and words[0].endswith("'s") and words[-1] in _RELATIONSHIP_WORDS:
-        return f"relationship label: {name!r}"
-
-    # Name IS a relationship word on its own ("Mom", "Dad")
-    if len(words) == 1 and words[0] in _RELATIONSHIP_WORDS:
+    # Any name ending in a relationship word: "John's Mom", "Anna - Lisas Dad", "Mom"
+    if words[-1] in _RELATIONSHIP_WORDS:
         return f"relationship label: {name!r}"
 
     # Name identical to organization (company entered as a contact)
@@ -103,6 +99,8 @@ class MatchCandidate:
     linkedin_url: str
     linkedin_name: str
     headline: str
+    current_title: Optional[str]
+    current_company: Optional[str]
     photo_url: Optional[str]
     confidence: float
 
@@ -178,6 +176,43 @@ def _fetch_dash_profile(api, urn_id: str) -> dict:
     return resp.json()
 
 
+def _fetch_dash_profile_by_public_id(api, public_id: str) -> dict:
+    """Fetch a DASH profile using the LinkedIn public identifier (vanity URL slug)."""
+    url = (
+        "https://www.linkedin.com/voyager/api/identity/dash/profiles"
+        "?q=memberIdentity"
+        f"&memberIdentity={public_id}"
+        "&decorationId=com.linkedin.voyager.dash.deco.identity.profile"
+        ".FullProfileWithEntities-93"
+    )
+    resp = api.client.session.get(url)
+    if resp.status_code != 200:
+        return {}
+    data = resp.json()
+    elements = data.get("elements", [])
+    return elements[0] if elements else {}
+
+
+def _extract_current_position(profile: dict) -> tuple:
+    """Return (current_title, current_company) from a DASH profile, or (None, None)."""
+    for key in ("experience", "positions"):
+        positions = profile.get(key)
+        if not isinstance(positions, list):
+            continue
+        for pos in positions:
+            # Current position has no end date
+            time_period = pos.get("timePeriod") or {}
+            if time_period.get("endDate") is not None:
+                continue
+            title = pos.get("title") or pos.get("roleName")
+            company = pos.get("companyName")
+            if not company:
+                company = (pos.get("company") or {}).get("name")
+            if title or company:
+                return title, company
+    return None, None
+
+
 def _extract_photo_url(profile: dict) -> Optional[str]:
     """Extract the largest available photo URL from a DASH profile dict."""
     pic = profile.get("profilePicture", {}) or {}
@@ -205,13 +240,43 @@ def _score_candidate(contact: Contact, result: dict, profile: dict) -> float:
     result_name = (
         profile.get("firstName", "") + " " + profile.get("lastName", "")
     ).strip() or result.get("name", "")
-    contact_words = set(contact.full_name.lower().split())
-    result_words = set(result_name.lower().split())
+    # Strip credentials appended after a comma ("Jane Smith, PhD, MBA" → "Jane Smith")
+    result_name_clean = result_name.split(",")[0].strip()
+    # Normalise: lowercase, strip diacritics (ñ→n, é→e, ó→o …), remove apostrophes
+    def _norm(s: str) -> str:
+        import unicodedata
+        nfkd = unicodedata.normalize("NFKD", s.lower())
+        ascii_only = "".join(c for c in nfkd if not unicodedata.combining(c))
+        return ascii_only.replace("'", "").replace("\u2019", "")
+
+    contact_words = set(_norm(contact.full_name).split())
+    result_words = set(_norm(result_name_clean).split())
+    contact_tokens = _norm(contact.full_name).split()
+    result_tokens = _norm(result_name_clean).split()
+    contact_first = contact_tokens[0] if contact_tokens else ""
+    result_first = result_tokens[0] if result_tokens else ""
+    contact_last = contact_tokens[-1] if contact_tokens else ""
+    result_last = result_tokens[-1] if result_tokens else ""
+
     if contact_words and contact_words.issubset(result_words):
         # All contact name tokens found in result — middle name / suffix difference only
         name_ratio = 0.95
+    elif (
+        contact_last == result_last
+        and contact_last != contact_first  # at least two tokens
+        and (
+            contact_first.startswith(result_first)
+            or result_first.startswith(contact_first)
+        )
+    ):
+        # Last name matches exactly and first name is a prefix of the other
+        # e.g. "Bob Smith" vs "Robert Smith"
+        name_ratio = 0.92
     else:
-        name_ratio = fuzz.token_sort_ratio(contact.full_name, result_name) / 100.0
+        name_ratio = (
+            fuzz.token_sort_ratio(_norm(contact.full_name), _norm(result_name_clean))
+            / 100.0
+        )
     if name_ratio >= 0.85:
         score += 0.5
     elif name_ratio >= 0.70:
@@ -219,13 +284,16 @@ def _score_candidate(contact: Contact, result: dict, profile: dict) -> float:
     elif name_ratio >= 0.55:
         score += 0.1
 
-    # Company / headline match (weight: 0.3)
+    # Company match (weight: 0.3) — check headline, jobtitle, and full profile text
     if contact.organization:
-        headline = profile.get("headline", "") or result.get("jobtitle", "") or ""
         org_lower = contact.organization.lower()
-        if org_lower in headline.lower():
+        headline = (profile.get("headline", "") or result.get("jobtitle", "") or "").lower()
+        profile_text = str(profile).lower()
+        if org_lower in headline:
             score += 0.3
-        elif fuzz.partial_ratio(org_lower, headline.lower()) >= 70:
+        elif org_lower in profile_text:
+            score += 0.2
+        elif fuzz.partial_ratio(org_lower, headline) >= 70:
             score += 0.15
 
     # Email domain match (weight: 0.2)
@@ -329,6 +397,7 @@ def search_contact(
             continue
 
         photo_url = _extract_photo_url(profile)
+        current_title, current_company = _extract_current_position(profile)
         linkedin_url = f"https://www.linkedin.com/in/{public_id}"
         headline = profile.get("headline") or r.get("jobtitle", "")
 
@@ -336,6 +405,8 @@ def search_contact(
             linkedin_url=linkedin_url,
             linkedin_name=result_name,
             headline=headline or "",
+            current_title=current_title,
+            current_company=current_company,
             photo_url=photo_url,
             confidence=score,
         )
@@ -479,6 +550,8 @@ def scrape_all(
                         linkedin_url=match.linkedin_url,
                         linkedin_name=match.linkedin_name,
                         headline=match.headline,
+                        current_title=match.current_title,
+                        current_company=match.current_company,
                         photo_url=match.photo_url,
                         photo_local=photo_local,
                         confidence=match.confidence,

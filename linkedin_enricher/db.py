@@ -38,6 +38,8 @@ class LinkedinMatch(BaseModel):
     linkedin_url = TextField(null=True)
     linkedin_name = TextField(null=True)
     headline = TextField(null=True)
+    current_title = TextField(null=True)
+    current_company = TextField(null=True)
     photo_url = TextField(null=True)
     photo_local = TextField(null=True)
     confidence = FloatField(default=0.0)
@@ -64,6 +66,17 @@ class RunLog(BaseModel):
 def init_db():
     with db:
         db.create_tables([Contact, LinkedinMatch, RunLog], safe=True)
+        # Migrations: add columns introduced after initial schema
+        for col, definition in [
+            ("current_title", "TEXT"),
+            ("current_company", "TEXT"),
+        ]:
+            try:
+                db.execute_sql(
+                    f"ALTER TABLE linkedin_matches ADD COLUMN {col} {definition}"
+                )
+            except Exception:
+                pass  # column already exists
 
 
 def get_pending_matches():

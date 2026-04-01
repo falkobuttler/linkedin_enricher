@@ -205,7 +205,11 @@
     </td>
     <td>
       <div class="name">{{ row.linkedin_name }}</div>
-      {% if row.headline %}<div class="sub">{{ row.headline }}</div>{% endif %}
+      {% if row.current_title or row.current_company %}
+        <div class="sub">{{ row.current_title }}{% if row.current_title and row.current_company %} · {% endif %}{{ row.current_company }}</div>
+      {% elif row.headline %}
+        <div class="sub">{{ row.headline }}</div>
+      {% endif %}
       {% if row.linkedin_url %}
         <a class="linkedin-link" href="{{ row.linkedin_url }}" target="_blank">↗ View profile</a>
       {% endif %}

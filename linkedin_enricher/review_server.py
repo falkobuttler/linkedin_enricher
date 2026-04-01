@@ -56,6 +56,8 @@ def index():
                 "linkedin_name": m.linkedin_name or "",
                 "linkedin_url": m.linkedin_url or "",
                 "headline": m.headline or "",
+                "current_title": m.current_title or "",
+                "current_company": m.current_company or "",
                 "confidence": round(m.confidence, 2),
                 "confidence_pct": int(m.confidence * 100),
                 "photo_file": photo_file,
