@@ -98,6 +98,7 @@ def _should_skip(contact: Contact) -> Optional[str]:
 class MatchCandidate:
     linkedin_url: str
     linkedin_name: str
+    urn_id: str
     headline: str
     current_title: Optional[str]
     current_company: Optional[str]
@@ -178,38 +179,87 @@ def _fetch_dash_profile(api, urn_id: str) -> dict:
 
 def _fetch_dash_profile_by_public_id(api, public_id: str) -> dict:
     """Fetch a DASH profile using the LinkedIn public identifier (vanity URL slug)."""
-    url = (
-        "https://www.linkedin.com/voyager/api/identity/dash/profiles"
-        "?q=memberIdentity"
-        f"&memberIdentity={public_id}"
-        "&decorationId=com.linkedin.voyager.dash.deco.identity.profile"
-        ".FullProfileWithEntities-93"
+    decoration = (
+        "com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93"
     )
-    resp = api.client.session.get(url)
-    if resp.status_code != 200:
-        return {}
-    data = resp.json()
-    elements = data.get("elements", [])
-    return elements[0] if elements else {}
+    # Try vanityName query (more reliable than memberIdentity for public profiles)
+    for q, param in [("vanityName", "vanityName"), ("memberIdentity", "memberIdentity")]:
+        url = (
+            "https://www.linkedin.com/voyager/api/identity/dash/profiles"
+            f"?q={q}&{param}={public_id}"
+            f"&decorationId={decoration}"
+        )
+        resp = api.client.session.get(url)
+        data = resp.json() if resp.status_code == 200 else {}
+        # LinkedIn returns {"status": N} for errors even on HTTP 200
+        if data.get("status"):
+            continue
+        elements = data.get("elements", [])
+        if elements:
+            return elements[0]
+        included = data.get("included", [])
+        for item in included:
+            if item.get("publicIdentifier") == public_id:
+                return item
+    return {}
 
 
 def _extract_current_position(profile: dict) -> tuple:
     """Return (current_title, current_company) from a DASH profile, or (None, None)."""
+
+    def _is_current(pos: dict) -> bool:
+        """True if the position has no end date (i.e. it's a current role)."""
+        for tp_key in ("timePeriod", "dateRange"):
+            tp = pos.get(tp_key) or {}
+            end = tp.get("endDate") or tp.get("end")
+            if end is not None:
+                return False
+        return True
+
+    def _company_name(pos: dict, group: dict = None) -> Optional[str]:
+        name = pos.get("companyName")
+        if not name:
+            name = (pos.get("company") or {}).get("name")
+        if not name and group:
+            name = group.get("companyName")
+            if not name:
+                name = (
+                    (group.get("profilePositionInPositionGroup") or {})
+                    .get("companyName")
+                )
+        return name or None
+
+    # Flat list: some library versions expose experience/positions directly
     for key in ("experience", "positions"):
         positions = profile.get(key)
         if not isinstance(positions, list):
             continue
         for pos in positions:
-            # Current position has no end date
-            time_period = pos.get("timePeriod") or {}
-            if time_period.get("endDate") is not None:
+            if not _is_current(pos):
                 continue
             title = pos.get("title") or pos.get("roleName")
-            company = pos.get("companyName")
-            if not company:
-                company = (pos.get("company") or {}).get("name")
+            company = _company_name(pos)
             if title or company:
                 return title, company
+
+    # LinkedIn DASH API: profilePositionGroups → elements → profilePositionInPositionGroup → elements
+    pg = profile.get("profilePositionGroups") or profile.get("positionGroups") or {}
+    elements = pg.get("elements", []) if isinstance(pg, dict) else (pg if isinstance(pg, list) else [])
+    for group in elements:
+        pos_container = group.get("profilePositionInPositionGroup") or group.get("positions") or {}
+        pos_list = (
+            pos_container.get("elements", [])
+            if isinstance(pos_container, dict)
+            else (pos_container if isinstance(pos_container, list) else [])
+        )
+        for pos in pos_list:
+            if not _is_current(pos):
+                continue
+            title = pos.get("title") or pos.get("roleName")
+            company = _company_name(pos, group)
+            if title or company:
+                return title, company
+
     return None, None
 
 
@@ -404,6 +454,7 @@ def search_contact(
         candidate = MatchCandidate(
             linkedin_url=linkedin_url,
             linkedin_name=result_name,
+            urn_id=urn_id,
             headline=headline or "",
             current_title=current_title,
             current_company=current_company,
@@ -549,6 +600,7 @@ def scrape_all(
                         contact=contact,
                         linkedin_url=match.linkedin_url,
                         linkedin_name=match.linkedin_name,
+                        urn_id=match.urn_id,
                         headline=match.headline,
                         current_title=match.current_title,
                         current_company=match.current_company,

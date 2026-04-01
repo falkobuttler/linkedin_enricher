@@ -110,10 +110,11 @@ def enrich(debug: bool, limit: Optional[int]):
     """
     from .db import LinkedinMatch, db, init_db
     from .linkedin_scraper import (
-        _fetch_dash_profile_by_public_id,
+        _fetch_dash_profile,
         _extract_current_position,
         _get_linkedin_client,
     )
+
 
     init_db()
 
@@ -151,9 +152,44 @@ def enrich(debug: bool, limit: Optional[int]):
     for i, m in enumerate(matches):
         bucket.acquire()
 
-        public_id = m.linkedin_url.rstrip("/").split("/")[-1]
         try:
-            profile = _fetch_dash_profile_by_public_id(api, public_id)
+            if m.urn_id:
+                profile = _fetch_dash_profile(api, m.urn_id)
+                profile_view = None
+            else:
+                # No urn_id — search by name to find the urn_id, then fetch DASH profile
+                public_id = m.linkedin_url.rstrip("/").split("/")[-1]
+                results = api.search_people(keywords=m.linkedin_name, limit=5) or []
+                if debug:
+                    console.print(
+                        f"  [dim]search({m.linkedin_name!r}) → {len(results)} result(s),"
+                        f" want publicIdentifier={public_id!r}[/dim]"
+                    )
+                profile = {}
+                profile_view = None
+                for r in results:
+                    urn_id = r.get("urn_id")
+                    if not urn_id:
+                        continue
+                    p = _fetch_dash_profile(api, urn_id)
+                    got_id = p.get("publicIdentifier")
+                    if debug:
+                        console.print(
+                            f"  [dim]  urn={urn_id} publicIdentifier={got_id!r}[/dim]"
+                        )
+                    if got_id == public_id:
+                        profile = p
+                        with db.atomic():
+                            m.urn_id = urn_id
+                            m.save()
+                        break
+                if not profile and not results:
+                    console.print(
+                        f"  [yellow]{m.linkedin_name}: search returned no results"
+                        f" — session may be soft-blocked[/yellow]"
+                    )
+                    failed += 1
+                    continue
         except Exception as exc:
             console.print(f"  [red]{m.linkedin_name}: {exc}[/red]")
             failed += 1
@@ -168,12 +204,21 @@ def enrich(debug: bool, limit: Optional[int]):
 
         if debug:
             console.print(f"  [dim]profile keys: {list(profile.keys())}[/dim]")
+            for pk in ("experience", "positions", "positionGroups", "profilePositionGroups"):
+                val = profile.get(pk)
+                if val is not None:
+                    console.print(f"  [dim]{pk}: {val}[/dim]")
 
         title, company = _extract_current_position(profile)
         with db.atomic():
             m.current_title = title
             m.current_company = company
             m.save()
+
+        # Write to Apple Contacts for already-applied matches
+        if m.status == "applied" and (title or company):
+            from .contacts_writer import write_enriched_fields
+            write_enriched_fields(m, console=console)
 
         console.print(
             f"  [green]✓[/green] {m.linkedin_name}:"

@@ -37,6 +37,7 @@ class LinkedinMatch(BaseModel):
     contact = ForeignKeyField(Contact, backref="matches", column_name="contact_id")
     linkedin_url = TextField(null=True)
     linkedin_name = TextField(null=True)
+    urn_id = TextField(null=True)
     headline = TextField(null=True)
     current_title = TextField(null=True)
     current_company = TextField(null=True)
@@ -70,6 +71,7 @@ def init_db():
         for col, definition in [
             ("current_title", "TEXT"),
             ("current_company", "TEXT"),
+            ("urn_id", "TEXT"),
         ]:
             try:
                 db.execute_sql(
